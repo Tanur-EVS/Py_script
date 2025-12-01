@@ -1,0 +1,1092 @@
+import os
+import zipfile
+import xml.etree.ElementTree as ET
+import pandas as pd
+from typing import Dict, List, Tuple, Optional
+import traceback
+import shutil
+import requests
+import json
+import time
+from requests.exceptions import RequestException
+
+import re
+import pandas as pd
+
+import time
+from selenium import webdriver
+from selenium.webdriver.common.by import By
+from selenium.webdriver.common.action_chains import ActionChains
+from selenium.webdriver.chrome.service import Service
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException
+
+
+
+
+
+def extract_filters_from_dashboard(report_url: str , driver):
+
+    try:
+        upgrade_close_btn = WebDriverWait(driver, 5).until(
+            EC.element_to_be_clickable((By.CSS_SELECTOR, "button[data-tb-test-id='postlogin-footer-close-Button']"))
+        )
+        upgrade_close_btn.click()
+        print("✅ Closed Tableau Cloud upgrade pop-up")
+    except TimeoutException:
+        print("ℹ️ No upgrade pop-up appeared")
+
+    wait = WebDriverWait(driver, 15)
+
+    # Switch to iframe
+    iframe = wait.until(EC.presence_of_element_located((By.TAG_NAME, "iframe")))
+    driver.switch_to.frame(iframe)
+
+    # Click Edit button
+    edit_button = wait.until(EC.element_to_be_clickable((By.ID, "edit")))
+    edit_button.click()
+
+    # Reset & re-switch to iframe if needed
+    driver.switch_to.default_content()
+
+    # Extract sheet names
+    sheet_items = wait.until(
+        EC.presence_of_all_elements_located(
+            (By.XPATH, "//div[contains(@class,'tabAuthSheetListItem')]")
+        )
+    )
+    sheet_names = []
+    print(" Sheets in the dashboard:")
+    for sheet in sheet_items:
+        print("•", sheet.get_attribute("title"))
+        sheet_names.append(sheet.get_attribute("title"))
+
+    # Extract dashboard name
+    match = re.search(r"/([^/#?]+)(?:[#?].*)?$", report_url)
+    dashboard_name = match.group(1) if match else None
+
+    normalized_target = re.sub(r"[\s_]+", "", dashboard_name).lower()
+    print("Target dashboard (normalized):", normalized_target)
+
+    dashboard_buttons = WebDriverWait(driver, 20).until(
+        EC.presence_of_all_elements_located((By.CSS_SELECTOR, ".tabAuthTabNavTabContainer button"))
+    )
+
+    dashboard_button = None
+    for btn in dashboard_buttons:
+        try:
+            dashboard_label = btn.find_element(By.CLASS_NAME, "tabAuthTabLabel").text.strip()
+            normalized_label = re.sub(r"\s+", "", dashboard_label).lower()
+            if normalized_label == normalized_target:
+                dashboard_button = btn
+                print(" Found matching dashboard tab:", dashboard_label)
+                break
+        except:
+            continue
+
+    if not dashboard_button:
+        raise Exception("No matching dashboard tab found for: " + str(dashboard_name))
+
+    # Click dashboard tab
+    ActionChains(driver).move_to_element(dashboard_button).pause(0.5).click().perform()
+    print("✅ Clicked dashboard tab")
+
+    # Wait for sheet list
+    WebDriverWait(driver, 20).until(
+        EC.presence_of_all_elements_located(
+            (By.XPATH, "//button[contains(@class,'tabDashboard')]//span[@class='tabAuthTabLabel']")
+        )
+    )
+    time.sleep(2)
+
+    results = {}
+
+    selected_dashboard_label = dashboard_label
+
+    for idx, name in enumerate(sheet_names):
+        print(f"\n Working on sheet: {name}")
+
+        sheet = WebDriverWait(driver, 20).until(
+            EC.presence_of_element_located(
+                (By.XPATH, f"//div[@class='tabAuthSheetListItem' and @title=\"{name}\"]")
+            )
+        )
+
+        ActionChains(driver).move_to_element(sheet).pause(0.5).click().perform()
+        print(f" Clicked sheet block: {name}")
+
+        try:
+            go_to_sheet_btn = WebDriverWait(driver, 10).until(
+                EC.element_to_be_clickable((By.CLASS_NAME, "tabAuthZoneChrome-tabGoToSheet"))
+            )
+            ActionChains(driver).move_to_element(go_to_sheet_btn).pause(0.5).click().perform()
+            print(f" Opened sheet for: {name}")
+
+            filters_list = []
+            try:
+                filters_card_content = WebDriverWait(driver, 15).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//div[@class='tabAuthCardLabel' and normalize-space(text())='Filters']"
+                                   "/following-sibling::div[contains(@class,'tabAuthCardContent')]")
+                    )
+                )
+                time.sleep(2)
+                filter_pills = filters_card_content.find_elements(By.CLASS_NAME, "tabAuthShelfPill")
+
+                for f in filter_pills:
+                    try:
+                        label = f.find_element(By.CLASS_NAME, "tabAuthPillLabel").text.strip()
+                        if label:
+                            filters_list.append(label)
+                    except:
+                        continue
+            except TimeoutException:
+                filters_list = []
+
+            results[name] = filters_list
+            print(" Filters:", filters_list if filters_list else "No filters")
+
+            dashboard_button = WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located(
+                    (By.XPATH, f"//button[contains(@class,'tabDashboard') "
+                        f"and .//span[@class='tabAuthTabLabel' and normalize-space(text())='{selected_dashboard_label}']]")
+                )
+            )
+            ActionChains(driver).move_to_element(dashboard_button).pause(0.5).click().perform()
+
+            WebDriverWait(driver, 20).until(
+                EC.presence_of_element_located((By.CLASS_NAME, "tab-SectionSheetList"))
+            )
+            time.sleep(2)
+
+        except TimeoutException:
+            print(f" No 'Go to Sheet' option for {name}, skipping.")
+            results[name] = []
+
+    
+   # Convert dict → list[dict] for Excel writing
+    filters_output = []
+    for chart_name, filters_list in results.items():
+        filters_output.append({
+            "CHART": chart_name,
+            "Filters": ", ".join(filters_list) if filters_list else ""
+        })
+
+    return filters_output
+
+
+
+def clean_field(field):
+     field.strip().strip('[]')
+ 
+function_map = [
+ 
+    # String functions
+    (r'\bREPLACE\((.*?),\s*(.*?),\s*(.*?)\)', lambda m: f'SUBSTITUTE({m.group(1)}, {m.group(2)}, {m.group(3)})'),
+    (r'\bFIND\((.*?),\s*(.*?)(?:,\s*(.*?))?\)', lambda m: f'SEARCH({m.group(1)}, {m.group(2)})'),
+    (r'\bCONTAINS\((.*?)\,\s*(.*?)\)', r'SEARCH(\2, \1, 1, 0) > 0'),
+    (r'\bSTARTSWITH\((.*?),\s*(.*?)\)', r'LEFT(\1, LEN(\2)) = \2'),
+    (r'\bENDSWITH\((.*?),\s*(.*?)\)', r'RIGHT(\1, LEN(\2)) = \2'),
+    (r'\bSPLIT\((.*?)\,\s*"(.*?)"(?:\,\s*(\d+))?\)', lambda m: f'PATHITEM(SUBSTITUTE({m.group(1)}, "{m.group(2)}", "|"), {m.group(3) or 1})'),
+    # Date functions
+    (r'\bDATEPART\(\s*[\'"]year[\'"]\s*,\s*(.*?)\)', r'YEAR(\1)'),
+    (r'\bDATEPART\(\s*[\'"]month[\'"]\s*,\s*(.*?)\)', r'MONTH(\1)'),
+    (r'\bDATEPART\(\s*[\'"]day[\'"]\s*,\s*(.*?)\)', r'DAY(\1)'),
+    (r'\bDATEPART\(\s*[\'"]weekday[\'"]\s*,\s*(.*?)\)', r'WEEKDAY(\1)'),
+    (r'\bTODAY\(\)', r'TODAY()'),
+    (r'\bNOW\(\)', r'NOW()'),
+    (r'\bMAKEDATE\((\d+),\s*(\d+),\s*(\d+)\)', lambda m: f'DATE({m.group(1)}, {m.group(2)}, {m.group(3)})'),
+    (r'\bMAKETIME\((.*?),\s*(.*?),\s*(.*?)\)', r'TIME(\1, \2, \3)'),
+    (r'\bDATEADD\((.*?),\s*(.*?),\s*[\'"](\w+)[\'"]\)', lambda m: f'DATEADD({m.group(1)}, {m.group(2)}, {m.group(3).upper()})'),
+    (r'\bDATEDIFF\((.*?),\s*(.*?),\s*[\'"](\w+)[\'"]\)', lambda m: f'DATEDIFF({m.group(1)}, {m.group(2)}, {m.group(3).upper()})'),
+    (r'\bDATETRUNC\(\s*[\'"](year|month|day)[\'"]\s*,\s*(.*?)\)',
+        lambda m: (
+            f'DATE(YEAR({m.group(2)}), 1, 1)' if m.group(1).lower() == 'year'
+            else f'EOMONTH({m.group(2)}, -1) + 1' if m.group(1).lower() == 'month'
+            else f'TRUNC({m.group(2)}, "DAY")'
+        )),
+    (r'\bDATETRUNC\(\s*[\'"]quarter[\'"]\s*,\s*(.*?)\)',
+        lambda m: f'DATE(YEAR({m.group(1)}), ((QUARTER({m.group(1)}) - 1) * 3) + 1, 1)'),
+ 
+    # Logical functions
+    (r'\bIF\s+(.*?)\s+THEN\s+(.*?)\s+END', r'IF(\1, \2)'),
+    (r'\bIF\s+(.*?)\s+THEN\s+(.*?)\s+ELSE\s+(.*?)\s+END', r'IF(\1, \2, \3)'),
+    (r'\bIIF\((.*?),\s*(.*?),\s*(.*?)\)', r'IF(\1, \2, \3)'),
+    (r'\bAND\((.*?)\)', lambda m: " && ".join(map(str.strip, m.group(1).split(',')))),
+    (r'\bOR\((.*?)\)', lambda m: " || ".join(map(str.strip, m.group(1).split(',')))),
+    (r'\bNOT\((.*?)\)', lambda m: f'NOT({m.group(1)})'),
+
+    (r'\bWINDOW_SUM\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(SUM({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_AVG\(AVG\((.*?)\)\)', lambda m: f'CALCULATE(AVERAGE({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_AVG\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(AVERAGEX(ALL(Table), {m.group(1)}))'),
+    (r'\bWINDOW_SUM\(AVG\((.*?)\)\)', lambda m: f'CALCULATE(SUMX(ALL(Table), {m.group(1)}))'),
+    (r'\bWINDOW_MAX\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(MAX({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_MIN\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(MIN({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_VAR\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(VAR.S({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_VAR\(AVG\((.*?)\)\)', lambda m: f'CALCULATE(VAR.S({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_STDEV\(SUM\((.*?)\)\)', lambda m: f'CALCULATE(STDEV.S({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_STDEV\(MAX\((.*?)\)\)', lambda m: f'CALCULATE(STDEV.S({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_MIN\(MIN\((.*?)\)\)', lambda m: f'CALCULATE(MIN({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_MAX\(MAX\((.*?)\)\)', lambda m: f'CALCULATE(MAX({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_SUM\(COUNT\((.*?)\)\)', lambda m: f'CALCULATE(COUNT({m.group(1)}), REMOVEFILTERS())'),
+    (r'\bWINDOW_AVG\(COUNTD\((.*?)\)\)', lambda m: f'CALCULATE(DISTINCTCOUNT({m.group(1)}), REMOVEFILTERS())'),
+ 
+    # Aggregates and math
+    (r'\bSUM\((.*?)\)', r'SUM(\1)'),
+    (r'\bAVG\((.*?)\)', r'AVERAGE(\1)'),
+    (r'\bMIN\((.*?)\)', r'MIN(\1)'),
+    (r'\bMAX\((.*?)\)', r'MAX(\1)'),
+    (r'\bSQRT\((.*?)\)', r'SQRT(\1)'),
+    (r'\bLOG\((.*?)\)', r'LOG(\1)'),
+    (r'\bINT\((.*?)\)', r'INT(\1)'),
+    (r'\bEXP\((.*?)\)', r'EXP(\1)'),
+    (r'\bZN\((.*?)\)', r'IF(ISBLANK(\1), 0, \1)'),
+    (r'\bISNULL\((.*?)\)', r'ISBLANK(\1)'),
+    (r'\bIFNULL\((.*?),\s*(.*?)\)', r'IF(ISBLANK(\1), \2, \1)'),
+    (r'\bNOT\s+ISNULL\((.*?)\)', r'NOT(ISBLANK(\1))'),
+    (r'\bCOUNTD\((.*?)\)', r'DISTINCTCOUNT(\1)'),
+ 
+    # INDEX() → RANKX(ALL(), [Measure]) — you may want to replace [Measure] dynamically
+    (r'\bINDEX\(\)', lambda m: f'RANKX(ALL(), [Measure])'),
+ 
+    # PREVIOUS_VALUE([Sales]) → CALCULATE([Sales], PREVIOUSMONTH([Date]))
+    (r'\bPREVIOUS_VALUE\((.*?)\)', lambda m: f'CALCULATE({m.group(1)}, PREVIOUSMONTH([Date]))'),
+ 
+    # Running aggregates (generic)
+    (r'\bRUNNING_SUM\((.*?)\)', lambda m: f'CALCULATE(SUMX(FILTER(ALL(Table), Table[Date] <= MAX(Table[Date])), {m.group(1)}))'),
+    (r'\bRUNNING_AVG\((.*?)\)', lambda m: f'CALCULATE(AVERAGEX(FILTER(ALL(Table), Table[Date] <= MAX(Table[Date])), {m.group(1)}))'),
+
+    # Lookup and previous value
+    (r'\bLOOKUP\(SUM\((.*?)\),\s*(-?\d+)\)', lambda m: f'CALCULATE(SUM({m.group(1)}), DATEADD(Table[Date], {m.group(2)}, MONTH))'),
+    (r'\bPREVIOUS_VALUE\((.*?)\)', lambda m: f'VAR Prev = CALCULATE([Sales], DATEADD(Table[Date], -1, MONTH))   Prev + [Sales] + [Sales]'),
+ 
+    # Dense Rank
+    (r'\bRANK_DENSE\(SUM\((.*?)\)\)', lambda m: f"RANKX(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, DENSE)"),
+ 
+    # Simple Rank
+    (r'\bRANK\(SUM\((.*?)\)\)', lambda m: f"RANKX(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, SKIP)"),
+ 
+    # Generic Rank
+    (r'\bRANK\((.*?)\)', lambda m: f"RANKX(ALL('Table'), {clean_field(m.group(1))})"),
+ 
+    # Unique Rank
+    (r'\bRANK_UNIQUE\(SUM\((.*?)\)\)', lambda m: f"RANKX(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, SKIP)  // Add tie-breaker logic if needed"),
+ 
+    # Modified Rank
+    (r'\bRANK_MODIFIED\(SUM\((.*?)\)\)', lambda m: f"RANKX(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, SKIP)  // Simulate modified rank manually"),
+ 
+    # Rank with Partition (e.g., by Category)
+    (r'\bRANK\(SUM\((.*?)\)\)\s+BY\s+([a-zA-Z_][a-zA-Z0-9_]*)', lambda m: f"RANKX(ALL('Table'[{clean_field(m.group(2))}]), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, SKIP)"),
+ 
+    # Top N Filter
+    (r'\bIF\s+RANK\(SUM\((.*?)\)\,\s*\'desc\'\)\s*<=\s*(\d+)', lambda m: f"IF(RANKX(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), BLANK(), DESC, SKIP) <= {m.group(2)}, TRUE(), FALSE())"),
+ 
+    # Percentile Rank (approximation)
+    (r'\bWINDOW_PERCENTILE\(SUM\((.*?)\),\s*(\d+)\)', lambda m: f"PERCENTILEX.INC(ALL('Table'), CALCULATE(SUM('Table'[{clean_field(m.group(1))}])), {int(m.group(2))/100})"),
+ 
+    # Percentile Rank (approximation)
+    (r'\bWINDOW_PERCENTILE\(SUM\((.*?)\),\s*(\d+)\)', lambda m: f"PERCENTILEX.INC(ALL('Table'), CALCULATE(SUM('Table'[{m.group(1)}])), {int(m.group(2))/100})"),
+ 
+    # Percentile
+    (r'\bPERCENTILE\((.*?),\s*(.*?)\)',  lambda m: f"PERCENTILEX.INC(ALL('Table'), 'YourTable'[{m.group(1).strip('[]')}], {m.group(2)})"),
+    (r'\bPERCENTILE\((.*?),\s*(.*?)\)', lambda m: f"PERCENTILEX.INC(REMOVEFILTERS(), {clean_field(m.group(1))}, {m.group(2)})")
+
+]
+
+#HelperFunction
+def apply_func_mapping(expr: str) -> str:
+    for pattern, repl in function_map:
+        expr = re.sub(pattern, repl if not callable(repl) else repl, expr, flags=re.IGNORECASE)
+    return expr
+ 
+def convert_lod_expression(expr, table_name="Table"):
+    expr = expr.strip()
+
+    # FIXED LOD
+    if expr.upper().startswith("{FIXED"):
+        match = re.match(r'\{\s*FIXED\s+([^\:]+?)\s*:\s*(.*?)\}', expr, re.IGNORECASE)
+        if match:
+            dims = [d.strip().strip("[]") for d in match.group(1).split(",")]
+            measure = match.group(2).strip()
+            measure=apply_func_mapping(measure)
+            dim_refs = ", ".join([f"'{table_name}'[{d}]" for d in dims])
+            return f"CALCULATE({measure}, ALLEXCEPT('{table_name}', {dim_refs}))"
+
+    # INCLUDE LOD
+    if expr.upper().startswith("{INCLUDE"):
+        match = re.match(r'\{\s*INCLUDE\s+([^\:]+?)\s*:\s*(.*?)\}', expr, re.IGNORECASE)
+        if match:
+            dims = [d.strip().strip(" []") for d in match.group(1).split(",")]
+            measure = match.group(2).strip()
+            measure = apply_func_mapping(measure)
+            filters = ", ".join([f"KEEPFILTERS(VALUES('{table_name}'[{d}]))" for d in dims])
+            return f"CALCULATE({measure}, {filters})"
+
+    # EXCLUDE LOD
+    if expr.upper().startswith("{EXCLUDE"):
+        match = re.match(r'\{\s*EXCLUDE\s+([^\:]+?)\s*:\s*(.*?)\}', expr, re.IGNORECASE)
+        if match:
+            dims = [d.strip().strip("[]") for d in match.group(1).split(",")]
+            measure = match.group(2).strip()
+            measure = apply_func_mapping(measure)
+            filters = ", ".join([f"REMOVEFILTERS('{table_name}'[{d}])" for d in dims])
+            return f"CALCULATE({measure}, {filters})"
+
+    # If no match, return original expression
+    return expr
+
+# Post-processing cleanup for invalid DAX patterns
+def clean_invalid_dax(expr: str) -> str:
+    """
+    Fixes invalid DAX patterns like DISTINCTCOUNT(IF(...)) or SUM(IF(...)).
+    Converts them into CALCULATE(..., FILTER(...)) form.
+    """
+    expr = expr.strip()
+
+    # DISTINCTCOUNT(IF(...)) → CALCULATE(DISTINCTCOUNT(...), FILTER(ALL('Table'), condition))
+    expr = re.sub(
+    r'DISTINCTCOUNT\s*\(\s*IF\s*\(\s*(.+?)\s*,\s*([^\),]+)(?:,\s*[^\)]*)?\)\s*\)',
+    lambda m: f"CALCULATE(DISTINCTCOUNT({m.group(2).strip()}), FILTER(ALL('Table'), {m.group(1).strip()}))",
+    expr,
+    flags=re.IGNORECASE
+    )
+
+    # SUM(IF(...)) → CALCULATE(SUM(...), FILTER(...))
+    expr = re.sub(
+        r'SUM\s*\(\s*IF\((.*?),(.*?),(.*?)\)\s*\)',
+        lambda m: f"CALCULATE(SUM({m.group(2).strip()}), FILTER(ALL('Table'), {m.group(1).strip()}))",
+        expr,
+        flags=re.IGNORECASE
+    )
+
+    # COUNT(IF(...)) → CALCULATE(COUNT(...), FILTER(...))
+    expr = re.sub(
+        r'COUNT\s*\(\s*IF\((.*?),(.*?),(.*?)\)\s*\)',
+        lambda m: f"CALCULATE(COUNT({m.group(2).strip()}), FILTER(ALL('Table'), {m.group(1).strip()}))",
+        expr,
+        flags=re.IGNORECASE
+    )
+
+    return expr
+
+def multi_if_to_switch(expr):
+    expr = expr.strip()
+    if not expr.upper().startswith("IF"):
+        return expr
+    expr = re.sub(r'\s+', ' ', expr)
+    else_part = None
+    if re.search(r'\bELSE\b', expr, re.IGNORECASE):
+        split_els = re.split(r'\bELSE\b', expr, flags=re.IGNORECASE)
+        if len(split_els) > 1:
+            else_segment = split_els[1]
+            else_part = else_segment.replace("END", "").strip()
+        expr = split_els[0]
+    conditions = []
+    results = []
+    parts = re.split(r'\bELSEIF\b', expr, flags=re.IGNORECASE)
+    first_if = parts[0].strip()
+    if_match = re.match(r'IF\s+(.*?)\s+THEN\s+(.*)', first_if, flags=re.IGNORECASE)
+    if if_match:
+        conditions.append(if_match.group(1).strip())
+        results.append(if_match.group(2).strip())
+    for p in parts[1:]:
+        if_match = re.match(r'(.*?)\s+THEN\s+(.*)', p.strip(), flags=re.IGNORECASE)
+        if if_match:
+            conditions.append(if_match.group(1).strip())
+            results.append(if_match.group(2).strip())
+    switch_parts = [f"{cond}, {res}" for cond, res in zip(conditions, results)]
+    switch_str = f"SWITCH(TRUE(), {', '.join(switch_parts)}"
+    if else_part:
+        switch_str += f", {else_part}"
+    switch_str += ")"
+    return switch_str
+ 
+def convert_tableau_to_dax(expr, table_name="Table"):
+    if pd.isna(expr):
+        return None
+    expr = str(expr).strip()
+    # Handle LOD expressions
+    if expr.startswith("{"):
+        return convert_lod_expression(expr, table_name=table_name)
+    
+    # Multi-condition IF
+ 
+    if re.search(r'\bELSEIF\b', expr, re.IGNORECASE):
+        return multi_if_to_switch(expr)
+ 
+    # CASE to SWITCH (simple)
+    if expr.upper().startswith("CASE"):
+        case_matches = re.findall(r'WHEN (.*?) THEN (.*?)(?= WHEN| ELSE| END)', expr, re.IGNORECASE)
+        else_match = re.search(r'ELSE (.*?) END', expr, re.IGNORECASE)
+        switch_parts = []
+        for cond, result in case_matches:
+            switch_parts.append(f"{cond}, {result}")
+        if else_match:
+            switch_str = f"SWITCH(TRUE(), {', '.join(switch_parts)}, {else_match.group(1)})"
+        else:
+            switch_str = f"SWITCH(TRUE(), {', '.join(switch_parts)})"
+        return switch_str
+ 
+    # Regex replacements
+    result = expr
+    for pattern, replacement in function_map:
+        if callable(replacement):
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+        else:
+            result = re.sub(pattern, replacement, result, flags=re.IGNORECASE)
+
+    #Final Cleanup to fix invalid dax
+    result = clean_invalid_dax(result)
+    return result    
+ 
+def apply_dax_conversion(metadata_df: pd.DataFrame, colname="calculation"):
+    """
+    Takes the combined metadata dataframe (from extraction),
+    adds a 'DAX Expressions' column wherever calculation exists,
+    and returns the updated dataframe.
+    """
+
+    # Normalize column names (optional safety)
+    df = metadata_df.copy()
+
+    # Find the exact column name (case insensitive)
+    calc_cols = [c for c in df.columns if c.strip().lower() == colname.lower()]
+
+    if not calc_cols:
+        print("⚠ No 'calculation' column found. No DAX conversion applied.")
+        return df  # unchanged
+
+    calc_col = calc_cols[0]
+
+    # Apply conversion
+    print(f" Applying DAX conversion on column: {calc_col}")
+    df["DAX Expressions"] = df[calc_col].apply(convert_tableau_to_dax)
+
+    return df
+
+
+
+def authenticate_tableau_cloud(server_url: str, username: str, password: str, site_name: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+    auth_url = f"{server_url}/api/3.18/auth/signin"
+    payload = {
+        "credentials": {
+            "name": username,
+            "password": password,
+            "site": {
+                "contentUrl": site_name
+            }
+        }
+    }
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+    try:
+        response = requests.post(auth_url, json=payload, headers=headers)
+        response.raise_for_status()
+
+        json_response = response.json()
+        credentials = json_response["credentials"]
+        token = credentials["token"]
+        site_id = credentials["site"]["id"]
+        user_id = credentials["user"]["id"]
+
+        print(f"Successfully authenticated with Tableau Cloud")
+        return token, site_id, user_id
+    
+    except RequestException as e:
+        print(e)
+        print(f"Authentication failed: {str(e)}")
+        return None, None, None
+
+def get_project_id(server_url: str, token: str, site_id: str, project_name: str) -> Optional[str]:
+
+    projects_url = f"{server_url}/api/3.15/sites/{site_id}/projects"
+
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Tableau-Auth": token
+    }
+
+    try:
+        response = requests.get(projects_url, headers=headers)
+        response.raise_for_status()
+
+        json_response = response.json()
+        projects = json_response.get("projects", {}).get("project", [])
+
+        for project in projects:
+            if project["name"] == project_name:
+                project_id = project["id"]
+                print(f"Found project '{project_name}' with ID: {project_id}")
+                return project_id
+            
+        print(f"Project '{project_name}' not found")
+        return None
+        
+    except RequestException as e:
+        print(f"Error getting project ID: {str(e)}")
+        return None
+    
+def get_workbooks_in_project(server_url: str, token: str, site_id: str, project_id: str) -> List[Dict]:
+    workbooks_url = f"{server_url}/api/3.15/sites/{site_id}/workbooks"
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "X-Tableau-Auth": token
+    }
+
+    try:
+        response = requests.get(workbooks_url, headers=headers)
+        response.raise_for_status()
+
+        json_response = response.json()
+        all_workbooks = json_response.get("workbooks", {}).get("workbook", [])
+
+        # Filter workbooks by project ID
+        workbooks = [wb for wb in all_workbooks if wb.get("project", {}).get("id") == project_id]
+
+        print(f"Found {len(workbooks)} workbooks in project")
+        return workbooks
+
+    except RequestException as e:
+        print(f"Error getting workbooks: {str(e)}")
+        return []
+
+def download_workbook(server_url: str, token: str, site_id: str, workbook_id: str, workbook_name: str, local_folder: str) -> Optional[str]:
+    download_url = f"{server_url}/api/3.15/sites/{site_id}/workbooks/{workbook_id}/content"
+
+    headers = {
+        "X-Tableau-Auth": token
+    }
+
+    # Create safe filename
+    safe_name = "".join([c if c.isalnum() or c in ['-', '_'] else '_' for c in workbook_name])
+    local_file_path = os.path.join(local_folder, f"{safe_name}.twbx")
+
+    try:
+        print(f"Downloading '{workbook_name}'...")
+        response = requests.get(download_url, headers=headers, stream=True)
+        response.raise_for_status()
+
+        with open(local_file_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                f.write(chunk)
+
+        print(f"Successfully downloaded '{workbook_name}' to {local_file_path}")
+        return local_file_path
+
+    except RequestException as e:
+        print(f"Error downloading workbook '{workbook_name}': {str(e)}")
+        return None
+
+def unzip_twbx(twbx_file_path: str, extract_to_folder: str) -> Optional[str]:
+    """Unzips a Tableau workbook (.twbx) file to the specified directory."""
+    if not os.path.exists(twbx_file_path):
+        print(f"Error: The file {twbx_file_path} does not exist.")
+        return None
+
+    if not os.path.exists(extract_to_folder):
+        os.makedirs(extract_to_folder)
+
+    try:
+        with zipfile.ZipFile(twbx_file_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_to_folder)
+        print(f"Successfully extracted to {extract_to_folder}")
+        return extract_to_folder
+    except zipfile.BadZipFile:
+        print(f"Error: {twbx_file_path} is not a valid .twbx file or is corrupted.")
+        return None
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        return None
+
+def get_dashboard_name_for_worksheet(root: ET.Element, worksheet_name: str) -> Optional[str]:
+    """Finds the dashboard name that contains the given worksheet."""
+    for dashboard in root.iter('dashboard'):
+        for zone in dashboard.iter('zone'):
+            if zone.get('name') == worksheet_name:
+                return dashboard.get('name', 'Unnamed Dashboard')
+    return None
+
+def extract_table_calculations(worksheet) -> Dict[str, List[Dict]]:
+    """Extracts table calculation information from a worksheet."""
+    table_calcs = {}
+    for column_instance in worksheet.findall('.//column-instance'):
+        field_name = column_instance.get('column', '').strip('[]')
+        table_calc = column_instance.find('table-calc')
+        
+        if field_name not in table_calcs:
+            table_calcs[field_name] = []
+
+        if table_calc is not None:
+            calc_info = {
+                'calc_type': table_calc.get('type', ''),
+                'ordering_type': table_calc.get('ordering-type', ''),
+                'instance_name': column_instance.get('name', '')
+            }
+            table_calcs[field_name].append(calc_info)
+
+    return table_calcs
+
+def extract_color_palette(worksheet) -> Dict[str, List[Dict]]:
+    """Extracts color palette information from a worksheet."""
+    field_colors = {}
+    for style_rule in worksheet.iter('style-rule'):
+        if style_rule.get('element') == 'mark':
+            for encoding in style_rule.iter('encoding'):
+                if encoding.get('attr') == 'color':
+                    field_name = encoding.get('field', '').split('.')[-1].strip('[]')
+                    if ':' in field_name:
+                        field_name = field_name.split(':')[1]
+                    color_palette = []
+                    for color_palette_elem in encoding.iter('color-palette'):
+                        palette_name = color_palette_elem.get('name', '')
+                        palette_type = color_palette_elem.get('type', '')
+                        colors = [color.text for color in color_palette_elem.iter('color')]
+                        if colors:
+                            color_palette.append({
+                                'name': palette_name,
+                                'type': palette_type,
+                                'colors': colors
+                            })
+                    if color_palette:
+                        field_colors[field_name] = color_palette
+    return field_colors
+
+def extract_sort_information(worksheet) -> Dict[str, str]:
+    """Extracts sorting information from a worksheet."""
+    sort_info = {}
+    for sort_elem in worksheet.iter('natural-sort'):
+        column = sort_elem.get('column', '')
+        direction = sort_elem.get('direction', '')
+        if column and direction:
+            field_parts = column.split('.')[-1].strip('[]')
+            if ':' in field_parts:
+                field_name = field_parts.split(':')[1]
+            else:
+                field_name = field_parts
+            sort_info[field_name] = direction
+    return sort_info
+
+def extract_connection_details(root: ET.Element) -> List[Dict]:
+    """Extracts detailed connection information from all datasources in the workbook."""
+    connections = []
+    
+    for datasource in root.iter('datasource'):
+        if datasource.get('name') == 'Parameters':
+            continue
+            
+        datasource_caption = datasource.get('caption', '')
+        
+        # Track unique connections per datasource
+        datasource_connections = {}
+        
+        # Extract named connections
+        named_connections = datasource.findall('.//named-connections/named-connection')
+        for named_conn in named_connections:
+            connection = named_conn.find('connection')
+            if connection is not None:
+                server = connection.get('server', '')
+                database = connection.get('dbname', '')
+                conn_class = connection.get('class', '')
+                
+                # Create a unique key for this connection
+                conn_key = f"{server}_{database}_{conn_class}"
+                
+                if conn_key not in datasource_connections:
+                    datasource_connections[conn_key] = {
+                        'datasource_caption': datasource_caption,
+                        'connection_caption': named_conn.get('caption', ''),
+                        'connection_class': conn_class,
+                        'server': server,
+                        'database': database,
+                        'tables': set(),
+                        'queries': set(),
+                        'relation_types': set(),
+                        'join_types': set(),
+                        'join_clauses': set()
+                    }
+        
+        # Extract relation information
+        relations = datasource.findall('.//relation')
+        for relation in relations:
+            conn_name = relation.get('connection', '')
+            table_name = relation.get('table', '')
+            query_text = relation.text.strip() if relation.text else ''
+            relation_type = relation.get('type', '')
+            join_type = relation.get('join', '')
+            
+            # Extract join clauses
+            join_clauses = []
+            for clause in relation.findall('.//clause'):
+                if clause.get('type') == 'join':
+                    for expression in clause.findall('.//expression'):
+                        join_clause = expression.text if expression.text else expression.get('op', '')
+                        if join_clause:
+                            join_clauses.append(join_clause)
+            
+            # Find the matching connection for this relation
+            for conn_info in datasource_connections.values():
+                # Add "SELECT * FROM table_name" for table type relations
+                if relation_type == 'table' and table_name:
+                    select_query = f"SELECT * FROM {table_name}"
+                    conn_info['queries'].add(select_query)
+                elif query_text:
+                    conn_info['queries'].add(query_text)
+                
+                if table_name:
+                    conn_info['tables'].add(table_name)
+                if relation_type:
+                    conn_info['relation_types'].add(relation_type)
+                if join_type:
+                    conn_info['join_types'].add(join_type)
+                if join_clauses:
+                    conn_info['join_clauses'].add('; '.join(join_clauses))
+        
+        # Convert sets to sorted lists for better readability
+        for conn_info in datasource_connections.values():
+            conn_info['tables'] = '; '.join(sorted(conn_info['tables']))
+            conn_info['queries'] = '; '.join(sorted(conn_info['queries']))
+            conn_info['relation_types'] = '; '.join(sorted(conn_info['relation_types']))
+            conn_info['join_types'] = '; '.join(sorted(conn_info['join_types']))
+            conn_info['join_clauses'] = '; '.join(sorted(conn_info['join_clauses']))
+            connections.append(conn_info)
+
+    return connections
+
+def extract_parameters(root: ET.Element) -> List[Dict]:
+    """Extracts parameter information including domain type from the Tableau workbook."""
+    parameters = []
+    for datasource in root.iter('datasource'):
+        if datasource.get('name') == 'Parameters':
+            for column in datasource.iter('column'):
+                param_name = column.get('name', '').strip('[]')
+                param_caption = column.get('caption', param_name)
+                param_type = column.get('datatype', 'unknown')
+                param_domain_type = column.get('param-domain-type', 'unknown')
+                param_default_format = column.get('default-format', '')
+                
+                param_props = {
+                    'name': param_name,
+                    'caption': param_caption,
+                    'data_type': param_type,
+                    'domain_type': param_domain_type,
+                    'default_format': param_default_format
+                }
+                
+                calculation = column.find('calculation')
+                if calculation is not None:
+                    param_props['default_value'] = calculation.get('formula', '')
+                
+                parameters.append(param_props)
+    
+    return parameters
+
+def extract_fields_and_types_from_twb(twb_file_path: str) -> Tuple[Dict[str, List[Dict]], List[Dict], List[Dict]]:
+    """Extracts field metadata, parameters, and connection information from a Tableau workbook."""
+    sheet_data = {}
+    parameters = []
+    connections = []
+
+    try:
+        tree = ET.parse(twb_file_path)
+        root = tree.getroot()
+        
+        parameters = extract_parameters(root)
+        connections = extract_connection_details(root)
+
+        for worksheet in root.iter('worksheet'):
+            sheet_name = worksheet.attrib.get('name', 'Unnamed Sheet')
+            fields = []
+            
+            # Extract all metadata
+            field_colors = extract_color_palette(worksheet)
+            sort_info = extract_sort_information(worksheet)
+            table_calcs_dict = extract_table_calculations(worksheet)
+
+            # Get the dashboard name for this worksheet
+            dashboard_name = get_dashboard_name_for_worksheet(root, sheet_name)
+
+            for datasource in worksheet.iter('datasource'):
+                if datasource.get('name') != 'Parameters':
+                    datasource_caption = datasource.attrib.get('caption', 'Unnamed Data Source')
+                    filters = set()
+
+                    for filter_elem in worksheet.iter('filter'):
+                        column_name = filter_elem.attrib.get('column')
+                        if column_name:
+                            field_name = column_name.split('.')[-1].strip('[]')
+                            core_field_name = field_name.split(':')[1] if ':' in field_name else field_name
+                            filters.add(core_field_name)
+
+                    for datasource_dependencies in worksheet.iter('datasource-dependencies'):
+                        column_instances = {}
+
+                        for column_instance in datasource_dependencies.iter('column-instance'):
+                            col_name = column_instance.attrib.get('column')
+                            derivation = column_instance.attrib.get('derivation', 'None')
+
+                            if col_name and (col_name not in column_instances or derivation != 'None'):
+                                column_instances[col_name] = derivation
+
+                        for column in datasource_dependencies.iter('column'):
+                            field_name = column.attrib.get('name', None)
+                            caption = column.attrib.get('caption', None)
+                            data_type = column.attrib.get('datatype', 'Unknown Data Type')
+
+                            calculation = column.find('calculation')
+                            
+                            # Safely get calculation formula
+                            calculation_formula = None
+                            if calculation is not None:
+                                calculation_formula = calculation.get('formula', None)
+
+                            clean_field_name = field_name.strip('[]') if field_name else 'Unnamed Field'
+                            core_field_name = clean_field_name.split(':')[1] if ':' in clean_field_name else clean_field_name
+
+                            matching_table_calcs_list = table_calcs_dict.get(clean_field_name, [])
+                            
+                            field_entry = {
+                                'field_name': clean_field_name,
+                                'caption': caption if caption else 'No Caption',
+                                'data_type': data_type,
+                                'aggregation': column_instances.get(field_name, 'None'),
+                                'calculation': calculation_formula,
+                                'is_filter': core_field_name in filters,
+                                'sort_direction': sort_info.get(core_field_name, 'None'),
+                                'color_palette': field_colors.get(core_field_name, []),
+                                'table_calc_types': [calc['calc_type'] for calc in matching_table_calcs_list],
+                                'table_calc_orderings': [calc['ordering_type'] for calc in matching_table_calcs_list],
+                                'dashboard_name': dashboard_name
+                            }
+
+                            fields.append(field_entry)
+
+                if fields:
+                    sheet_data[sheet_name] = fields
+
+    except ET.ParseError as e:
+        print(f"Error parsing {twb_file_path}: {e}")
+    except Exception as e:
+        print(f"Error processing {twb_file_path}: {str(e)}")
+        print("Full error details:")
+        traceback.print_exc()
+
+    return sheet_data, parameters, connections
+
+def write_sheets_and_parameters_to_excel(sheet_data: Dict[str, List[Dict]], 
+                                       parameters: List[Dict], 
+                                       connections: List[Dict],
+                                       output_excel_file: str, url, driver):
+    """Writes field metadata, parameters, connection and result(filters) information to different sheets in an Excel file."""
+    with pd.ExcelWriter(output_excel_file, engine='xlsxwriter') as writer:
+        # Write parameters to Excel
+        if parameters:
+            params_df = pd.DataFrame(parameters)
+            params_df.to_excel(writer, sheet_name='Parameters', index=False)
+            print(f"Wrote {len(parameters)} parameters to Parameters sheet")
+
+        # Write connections to Excel
+        if connections:
+            connections_df = pd.DataFrame(connections)
+            connection_columns = [
+                'datasource_caption', 
+                'connection_caption', 
+                'connection_class', 
+                'server', 
+                'database',
+                'tables',
+                'relation_types',
+                'join_types',
+                'join_clauses',
+                'queries'
+            ]
+            existing_columns = [col for col in connection_columns if col in connections_df.columns]
+            connections_df = connections_df[existing_columns]
+            connections_df = connections_df.drop_duplicates()
+            
+            writer.book.add_format({'text_wrap': True})
+            connections_df.to_excel(writer, sheet_name='Connections', index=False)
+            
+            worksheet = writer.sheets['Connections']
+            for idx, col in enumerate(connections_df.columns):
+                max_length = max(
+                    connections_df[col].astype(str).apply(len).max(),
+                    len(str(col))
+                )
+                adjusted_width = min(max_length + 2, 100)
+                worksheet.set_column(idx, idx, adjusted_width)
+            
+            print(f"Wrote {len(connections_df)} unique connections to Connections sheet")
+
+        results = extract_filters_from_dashboard(url,driver)
+        #write filters to excel
+        if results:
+            results_df = pd.DataFrame(results)
+            results_df.to_excel(writer, sheet_name="Filters", index=False)
+            print(f"Wrote {len(results)} filter entries to Filters sheet")
+
+        # Write sheet data to Excel
+        for sheet_name, fields in sheet_data.items():
+            df = pd.DataFrame(fields)
+            df = apply_dax_conversion(df)
+            sheet_columns = [
+                'field_name', 'caption', 'data_type', 'aggregation',
+                'calculation', 'is_filter', 'sort_direction', 'color_palette',
+                'table_calc_types', 'table_calc_orderings', 'dashboard_name', 'DAX Expressions'
+            ]
+            existing_columns = [col for col in sheet_columns if col in df.columns]
+            df[existing_columns].to_excel(writer, sheet_name=sheet_name[:31], index=False)
+            print(f"Wrote {len(fields)} fields for sheet: {sheet_name}")
+
+def process_twbx_file(twbx_file_path: str, extract_base_folder: str, output_base_folder: str,url,driver) -> None:
+    """Process a single TWBX file and generate its metadata Excel file in a dedicated folder."""
+    
+    # Create unique subfolders for extraction and output using the TWBX filename
+    twbx_filename = os.path.splitext(os.path.basename(twbx_file_path))[0]
+    extract_folder = os.path.join(extract_base_folder, twbx_filename)  # Store extracted files in named folder
+    output_folder = os.path.join(output_base_folder, twbx_filename)
+    
+    print(f"\nProcessing: {twbx_filename}")
+    
+    try:
+        # Create output folder
+        os.makedirs(output_folder, exist_ok=True)
+        
+        # Create extraction folder
+        os.makedirs(extract_folder, exist_ok=True)
+        
+        extracted_folder = unzip_twbx(twbx_file_path, extract_folder)
+
+        if extracted_folder:
+            twb_file_path = None
+            
+            # Find the .twb file within the extracted folder
+            for root_dir, dirs, files in os.walk(extracted_folder):
+                for file in files:
+                    if file.endswith('.twb'):
+                        twb_file_path = os.path.join(root_dir, file)
+                        break
+                if twb_file_path:
+                    break
+            
+            if twb_file_path:
+                # Get all three values from the extraction function
+                sheet_data, parameters, connections = extract_fields_and_types_from_twb(twb_file_path)
+
+                # If there are fields, parameters, or connections found, write them to an Excel file
+                if sheet_data or parameters or connections:
+                    # Create output Excel file in the workbook-specific output folder
+                    output_excel_file = os.path.join(output_folder, f'{twbx_filename}_metadata.xlsx')
+                    write_sheets_and_parameters_to_excel(
+                        sheet_data=sheet_data,
+                        parameters=parameters,
+                        connections=connections,
+                        output_excel_file=output_excel_file,
+                        url=url,
+                        driver=driver
+                    )
+                    print(f"Created metadata file: {output_excel_file}")
+                    print(f"Extracted files are preserved in: {extract_folder}")
+                else:
+                    print(f"No metadata found in {twbx_filename}. Please check the XML structure.")
+            else:
+                print(f"Error: .twb file not found in extracted folder for {twbx_filename}")
+            
+    except Exception as e:
+        print(f"Error processing {twbx_filename}: {str(e)}")
+        traceback.print_exc()
+
+
+
+
+
+
+
+tableau_server = "https://prod-in-a.online.tableau.com"
+username = "siddharth.singh2@evalueserve.com"
+password = "Demo@123"
+site_name = "siddharthsingh2-9d7c7b60a4"
+project_name = "Test_dashboards"
+#url = "https://prod-in-a.online.tableau.com/t/siddharthsingh2-9d7c7b60a4/views/Customer_Reviews_Dashboard_PurpleBG_WITH_Logo/ProductReview"
+
+# Local folders for the workflow
+#base_folder = r"C:\Users\Tanmay.Arora\Documents\POC_Cloud"
+download_folder = r"C:\Users\Tanur.Yadav\Desktop\FINAL_EXTRACTION\Downloads"
+extract_base_folder = r"C:\Users\Tanur.Yadav\Desktop\FINAL_EXTRACTION\extract_base"
+output_base_folder = r"C:\Users\Tanur.Yadav\Desktop\FINAL_EXTRACTION\extract_base"
+
+# Create base folders if they don't exist
+os.makedirs(download_folder, exist_ok=True)
+os.makedirs(extract_base_folder, exist_ok=True)
+os.makedirs(output_base_folder, exist_ok=True)
+
+print("Connecting to Tableau Cloud...")
+
+# Step 1: Authenticate with Tableau Cloud
+token, site_id, user_id = authenticate_tableau_cloud(tableau_server, username, password, site_name)
+
+if not token or not site_id:
+    print("Failed to authenticate with Tableau Cloud. Exiting.")
+    quit()
+
+# Step 2: Get project ID
+project_id = get_project_id(tableau_server, token, site_id, project_name)
+if not project_id:
+    print(f"Project '{project_name}' not found. Exiting.")
+    quit()
+
+# Step 3: Get workbooks in the project
+workbooks = get_workbooks_in_project(tableau_server, token, site_id, project_id)
+if not workbooks:
+    print(f"No workbooks found in project '{project_name}'. Exiting.")
+    quit()
+print(f"Found {len(workbooks)} workbooks to download and process")
+
+csv_path = r'C:\Users\Tanur.Yadav\Desktop\FINAL_EXTRACTION\dashboard_links.csv'
+
+df_links = pd.read_csv(csv_path)
+dashboard_links = {}
+for index, row in df_links.iterrows():
+    dashboard_links[row['Dashboard']] = row['Link']
+
+chrome_options = Options()
+chrome_options.add_argument("--start-maximized")
+service = Service(r"C:\Users\Tanur.Yadav\Desktop\Dependencies[1]\chromedriver-win64\chromedriver.exe")  # Replace with your actual path
+driver = webdriver.Chrome(service=service, options=chrome_options)
+
+# Step 4: Download and process each workbook
+for workbook in workbooks:
+    workbook_id = workbook["id"]
+    workbook_name = workbook["name"]
+    url=dashboard_links[workbook_name]
+    driver.get(url)
+    print('Waiting 30 seconds for you to log in and the report to load...')
+    time.sleep(30)
+
+# Download the workbook
+    local_file_path = download_workbook(
+        server_url=tableau_server,
+        token=token, 
+        site_id=site_id, 
+        workbook_id=workbook_id, 
+        workbook_name=workbook_name, 
+        local_folder=download_folder
+    )
+    if local_file_path:
+        try:
+            process_twbx_file(local_file_path, extract_base_folder, output_base_folder,url,driver)
+        except Exception as e:
+            print(f"Error processing workbook '{workbook_name}': {str(e)}")
+            traceback.print_exc()
+print("\nProcessing complete!")
+print(f"Downloaded workbooks are in: {download_folder}")
+print(f"Extracted files are preserved in: {extract_base_folder}")
+print(f"Metadata files have been organized in: {output_base_folder}")
+
+
+driver.quit()
