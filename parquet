@@ -1,0 +1,40 @@
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+records = [
+ {
+  "candidate_id":"CAND_001",
+  "full_name":"tanur SHARMA",
+  "email":"tanur@gmail.com",
+  "phone":"+91-9876543210",
+  "date_of_birth":"1999/08/14",
+  "created_at":"2024-06-01 10:45:22",
+  "status":"completed",
+  "source_system":"EY",
+  "address":{"line1":"Flat 203","line2":"MG Road","city":"Bengaluru","state":"KA","pincode":"560001","landmark":"Metro"},
+  "employment_history":[{"company_name":"EY","role":"Intern","start_date":"01-01-2024","end_date":"30-06-2024","verification_status":"VERIFIED"}],
+  "education":[{"degree":"B.Tech","university":"VTU","graduation_year":"2025","verified":"yes"}],
+  "bgv_checks":[{"check_id":"CHK_101","check_type":"EMPLOYMENT","initiated_date":"2024-06-02","completed_date":"2024-06-10","result":"clear","utv_reason":None}],
+  "metadata":"{\"priority\":\"High\"}"
+ }
+]
+
+for i in range(2,16):
+ records.append({
+  "candidate_id":f"CAND_{i:03d}",
+  "full_name":f"User {i}",
+  "email":f"user{i}@mail.com",
+  "phone":f"9100000{i:02d}",
+  "date_of_birth":"1996-01-01",
+  "created_at":f"2024-06-{i:02d}",
+  "status":["completed","pending","in_progress","done"][i%4],
+  "source_system":["EY","MAERSK","MANUAL"][i%3],
+  "address":{"line1":"House","line2":None,"city":"City","state":"KA","pincode":"560000","landmark":None},
+  "employment_history":[],
+  "education":[],
+  "bgv_checks":[],
+  "metadata":"{\"priority\":\"Medium\"}"
+ })
+
+table = pa.Table.from_pylist(records)
+pq.write_table(table, "candidate_profiles.parquet")
