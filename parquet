@@ -1,40 +1,103 @@
+import random
+import uuid
+import json
+from datetime import datetime, timedelta
+
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-records = [
- {
-  "candidate_id":"CAND_001",
-  "full_name":"tanur SHARMA",
-  "email":"tanur@gmail.com",
-  "phone":"+91-9876543210",
-  "date_of_birth":"1999/08/14",
-  "created_at":"2024-06-01 10:45:22",
-  "status":"completed",
-  "source_system":"EY",
-  "address":{"line1":"Flat 203","line2":"MG Road","city":"Bengaluru","state":"KA","pincode":"560001","landmark":"Metro"},
-  "employment_history":[{"company_name":"EY","role":"Intern","start_date":"01-01-2024","end_date":"30-06-2024","verification_status":"VERIFIED"}],
-  "education":[{"degree":"B.Tech","university":"VTU","graduation_year":"2025","verified":"yes"}],
-  "bgv_checks":[{"check_id":"CHK_101","check_type":"EMPLOYMENT","initiated_date":"2024-06-02","completed_date":"2024-06-10","result":"clear","utv_reason":None}],
-  "metadata":"{\"priority\":\"High\"}"
- }
+# ---------------------------
+# Helpers
+# ---------------------------
+cities = ["Bangalore", "Mumbai", "Delhi", "Pune", "Hyderabad"]
+products = [
+    ("PRD_01", "Milk", "Dairy", 60),
+    ("PRD_02", "Bread", "Bakery", 40),
+    ("PRD_03", "Eggs", "Poultry", 7),
+    ("PRD_04", "Apple", "Fruits", 120),
+    ("PRD_05", "Chips", "Snacks", 30),
 ]
 
-for i in range(2,16):
- records.append({
-  "candidate_id":f"CAND_{i:03d}",
-  "full_name":f"User {i}",
-  "email":f"user{i}@mail.com",
-  "phone":f"9100000{i:02d}",
-  "date_of_birth":"1996-01-01",
-  "created_at":f"2024-06-{i:02d}",
-  "status":["completed","pending","in_progress","done"][i%4],
-  "source_system":["EY","MAERSK","MANUAL"][i%3],
-  "address":{"line1":"House","line2":None,"city":"City","state":"KA","pincode":"560000","landmark":None},
-  "employment_history":[],
-  "education":[],
-  "bgv_checks":[],
-  "metadata":"{\"priority\":\"Medium\"}"
- })
+payment_methods = ["UPI", "CARD", "WALLET"]
+delivery_statuses = ["DELIVERED", "DELAYED"]
+payment_statuses = ["SUCCESS", "FAILED"]
 
+base_time = datetime.now()
+
+# ---------------------------
+# Generate records
+# ---------------------------
+records = []
+
+for i in range(55):  # 50–60 entries
+    order_time = base_time - timedelta(minutes=random.randint(0, 5000))
+
+    # Customer
+    customer = {
+        "customer_id": f"CUST_{random.randint(100,999)}",
+        "name": f"Customer_{random.randint(1,50)}",
+        "phone": f"9{random.randint(100000000,999999999)}",
+        "city": random.choice(cities)
+    }
+
+    # Items (1–4 per order)
+    item_count = random.randint(1, 4)
+    items = []
+    total_amount = 0
+
+    for _ in range(item_count):
+        pid, pname, cat, price = random.choice(products)
+        qty = random.randint(1, 5)
+        total_amount += price * qty
+
+        items.append({
+            "product_id": pid,
+            "product_name": pname,
+            "category": cat,
+            "quantity": qty,
+            "price": float(price)
+        })
+
+    # Payment
+    payment = {
+        "method": random.choice(payment_methods),
+        "transaction_id": str(uuid.uuid4()),
+        "amount": float(total_amount),
+        "status": random.choice(payment_statuses)
+    }
+
+    # Delivery
+    promised = random.randint(10, 30)
+    actual = promised + random.randint(-2, 15)
+
+    delivery = {
+        "partner_id": f"DP_{random.randint(10,99)}",
+        "promised_minutes": promised,
+        "actual_minutes": actual,
+        "status": "DELIVERED" if actual <= promised else "DELAYED"
+    }
+
+    # Metadata (JSON string)
+    metadata = json.dumps({
+        "coupon": random.choice(["NONE", "NEWUSER", "FESTIVE"]),
+        "app_version": f"{random.randint(1,3)}.{random.randint(0,9)}",
+        "priority": random.choice(["LOW", "MEDIUM", "HIGH"])
+    })
+
+    records.append({
+        "order_id": f"ORD_{1000+i}",
+        "order_timestamp": order_time.strftime("%Y-%m-%d %H:%M:%S"),
+        "customer": customer,
+        "items": items,
+        "payment": payment,
+        "delivery": delivery,
+        "metadata": metadata
+    })
+
+# ---------------------------
+# Write Parquet
+# ---------------------------
 table = pa.Table.from_pylist(records)
-pq.write_table(table, "candidate_profiles.parquet")
+pq.write_table(table, "qc_orders.parquet")
+
+print("Parquet file created: qc_orders.parquet")
