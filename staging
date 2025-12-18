@@ -1,0 +1,36 @@
+config {
+  type: "table",
+  schema: "staging",
+  name: "stg_qc_orders",
+  description: "Staging table for quick-commerce orders loaded from Parquet"
+}
+
+SELECT
+  order_id,
+
+  -- timestamps
+  SAFE_CAST(order_timestamp AS TIMESTAMP) AS order_timestamp,
+
+  -- customer (flattened struct)
+  customer.customer_id,
+  INITCAP(TRIM(customer.name)) AS customer_name,
+  customer.phone,
+  customer.city,
+
+  -- payment
+  payment.method AS payment_method,
+  payment.transaction_id,
+  payment.amount,
+  UPPER(payment.status) AS payment_status,
+
+  -- delivery
+  delivery.partner_id,
+  delivery.promised_minutes,
+  delivery.actual_minutes,
+  delivery.status AS delivery_status,
+
+  -- metadata (kept raw for now)
+  metadata
+
+FROM
+  `your_project.your_dataset.qc_orders`
