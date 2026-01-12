@@ -1,0 +1,84 @@
+logsBucket: "gs://x-to-bq-training/bq-dataform_demo/logs"
+substitutions:
+  _LOCATION: us-central1
+  _REPO: dataform-demo
+  _PROJECT: neat-striker-447409-t5
+  _WORKSPACE: feature-saksham
+steps:
+  - id: "Creating json file"
+    name: "node:20"
+    entrypoint: "bash"
+    secretEnv: ['DF_CRED']
+    args:
+      - -c
+      - |
+        echo "$$DF_CRED" > /workspace/.df-credentials.json
+
+
+  - id: "Create Compilation Result Resource"
+    name: "gcr.io/google.com/cloudsdktool/cloud-sdk:slim"
+    entrypoint: bash
+    secretEnv: ['DF_CRED']
+    args:
+      - -c
+      - |
+        apt-get update && apt-get install -y jq
+        echo "$$DF_CRED" > /workspace/.df-credentials.json
+        gcloud auth activate-service-account --key-file=/workspace/.df-credentials.json --project=${_PROJECT} --quiet
+        
+        _ACCESS_TOKEN=$(gcloud auth print-access-token)
+        echo "<<<<<<<<<<<<<<<  _ACCESS_TOKEN"
+        echo "TOKEN LEN: ${#_ACCESS_TOKEN}"
+        echo "TOKEN (first 10 chars): ${_ACCESS_TOKEN:0:10}"
+        _API_URL="https://dataform.googleapis.com/v1beta1/projects/${_PROJECT}/locations/${_LOCATION}/repositories/${_REPO}/workspaces/${_WORKSPACE}:compile"
+        echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  _API_URL"
+        echo "API_URL=${_API_URL}"
+        echo "API_URL (last 180 chars): ${_API_URL: -180}"
+        
+
+        _RESPONSE=$(curl -s -w "\nHTTP STATUS: %{http_code}\n" \
+          -X POST \
+          -H "Authorization: Bearer $_ACCESS_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d '{}' \
+          "$_API_URL")
+
+        echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<<  _RESPONSE"
+        echo "Response length: ${#_RESPONSE}"
+        echo "Response: $_RESPONSE"
+        echo "Response (last 100 chars): ${_RESPONSE: -100}"
+        
+
+        _COMPILATION_RESULT_ID=$(echo "$_RESPONSE" | jq -r '.name')
+
+        echo "<<<<<<<<<<<<<<<  _COMPILATION_RESULT_ID"
+        echo "${_COMPILATION_RESULT_ID}"
+
+        echo "$_COMPILATION_RESULT_ID" > /workspace/compilation_result_id.txt
+        echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+        cat /workspace/compilation_result_id.txt
+        echo "<<<<<<<<<<<<<<<<<<<<<<<<<<<<<"
+
+
+
+  - id: "Execute Dataform Unit Tests"
+    name: "python:3.11"
+    entrypoint: "bash"
+    args:
+      - -c
+      - |
+        apt-get update && apt-get install -y jq
+        pip install --upgrade pip
+        pip install dataform-unit-tests
+        export COMPILATION_RESULT="$(cat /workspace/compilation_result_id.txt)"
+        export GCP_PROJECT_ID=neat-striker-447409-t5
+        python -m dataform_unit_testing
+
+
+availableSecrets:
+  secretManager:
+    - versionName: projects/648723306784/secrets/Dataform-secret/versions/latest
+      env: 'DF_CRED'
+
+
+https://pypi.org/project/dataform-unit-tests/
