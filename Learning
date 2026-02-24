@@ -1,0 +1,11 @@
+I would like to share a structured overview of my learnings and experiences since joining. Over the past several months, my focus has been on building strong fundamentals across data engineering, analytics and cloud based transformation initiatives. Here are the process I have been part of : 
+
+1) X-Looker Migration (Under Mr. Vikas):  here I worked mainly on to create a automated process with python to convert the metadata from PowerBI to Tableau 
+2) X-BQ( Dataflow) : It was already setup by team but done to understand how dataflow works and done the setup 
+3)Dataform : implemented Full CI/CD setup and complete dataform with POC
+4) Certifications and Trainings: CDL ACE PDE GENAI , DATA MODELLING, SNOWFLAKE, DATABRICKS
+
+Moving Forward I aim to work on : 
+1) tracker work with Ratnakar 
+2) Databricks professional certification suggested by Abhishek
+3) Strong understanding of overall GCP services.
