@@ -1,5 +1,14 @@
-Exception: Request failed for https://storage.googleapis.com returned code 400. Truncated server response: {
-  "error": {
-    "code": 400,
-    "message": "Only object insert requests can be sent to /upload/*. Re-send request to the same path, but without... (use muteHttpExceptions option to examine full response)
-uploadLatestExceltoGCS	@ Code.gs:38
+var url = "https://storage.googleapis.com/upload/storage/v1/b/" 
+          + bucketName + "/o?uploadType=media&name=" + encodedFileName;
+
+var options = {
+  method: "POST",   // ✅ must be POST for /upload/
+  contentType: blob.getContentType(),
+  payload: blob.getBytes(),
+  headers: {
+    Authorization: "Bearer " + token
+  }
+};
+
+var responseUpload = UrlFetchApp.fetch(url, options);
+Logger.log(responseUpload.getContentText());
