@@ -1,26 +1,33 @@
-function copyFileToGCS() {
-  var fileId = "YOUR_DRIVE_FILE_ID";  // Replace with your Drive file ID
-  var file = DriveApp.getFileById(fileId);
-  var blob = file.getBlob();
-  
-  var bucketName = "YOUR_GCS_BUCKET_NAME"; // Replace with your GCS bucket
-  var fileName = file.getName();
-  
-  // Get OAuth token for GCS
+function copyFolderToGCS() {
+  var folderId = "YOUR_DRIVE_FOLDER_ID";
+  var bucketName = "YOUR_BUCKET_NAME";
+  var folder = DriveApp.getFolderById(folderId);
+  var files = folder.getFiles();
+
   var token = ScriptApp.getOAuthToken();
-  
-  var url = "https://storage.googleapis.com/upload/storage/v1/b/" + bucketName + "/o?uploadType=media&name=" + fileName;
-  
-  var options = {
-    method: "post",
-    contentType: blob.getContentType(),
-    payload: blob.getBytes(),
-    headers: {
-      Authorization: "Bearer " + token
-    },
-    muteHttpExceptions: true
-  };
-  
-  var response = UrlFetchApp.fetch(url, options);
-  Logger.log(response.getContentText());
+
+  while (files.hasNext()) {
+    var file = files.next();
+    var blob = file.getBlob();
+    var fileName = file.getName();
+
+    Logger.log("Uploading: " + fileName);
+
+    var url = "https://storage.googleapis.com/upload/storage/v1/b/" 
+      + bucketName 
+      + "/o?uploadType=media&name=" 
+      + encodeURIComponent(folder.getName() + "/" + fileName);
+
+    var options = {
+      method: "post",
+      contentType: blob.getContentType(),
+      payload: blob.getBytes(),
+      headers: {
+        Authorization: "Bearer " + token
+      }
+    };
+
+    var response = UrlFetchApp.fetch(url, options);
+    Logger.log(response.getContentText());
+  }
 }
