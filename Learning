@@ -1,11 +1,41 @@
-I would like to share a structured overview of my learnings and experiences since joining. Over the past several months, my focus has been on building strong fundamentals across data engineering, analytics and cloud based transformation initiatives. Here are the process I have been part of : 
+function uploadLatestExcelToGCS() {
 
-1) X-Looker Migration (Under Mr. Vikas):  here I worked mainly on to create a automated process with python to convert the metadata from PowerBI to Tableau 
-2) X-BQ( Dataflow) : It was already setup by team but done to understand how dataflow works and done the setup 
-3)Dataform : implemented Full CI/CD setup and complete dataform with POC
-4) Certifications and Trainings: CDL ACE PDE GENAI , DATA MODELLING, SNOWFLAKE, DATABRICKS
+  var folderId = "YOUR_FOLDER_ID";
+  var bucketName = "your-gcs-bucket-name";
 
-Moving Forward I aim to work on : 
-1) tracker work with Ratnakar 
-2) Databricks professional certification suggested by Abhishek
-3) Strong understanding of overall GCP services.
+  // Get latest Excel file sorted by createdTime
+  var response = Drive.Files.list({
+    q: "'" + folderId + "' in parents and mimeType='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'",
+    orderBy: "createdTime desc",
+    pageSize: 1
+  });
+
+  if (!response.files || response.files.length === 0) {
+    Logger.log("No Excel file found.");
+    return;
+  }
+
+  var fileId = response.files[0].id;
+  var fileName = response.files[0].name;
+
+  var blob = DriveApp.getFileById(fileId).getBlob();
+  var encodedFileName = encodeURIComponent(fileName);
+
+  var url = "https://storage.googleapis.com/upload/storage/v1/b/" 
+            + bucketName + "/o/" + encodedFileName + "?uploadType=media";
+
+  var token = ScriptApp.getOAuthToken();
+
+  var options = {
+    method: "PUT",  // overwrite
+    contentType: blob.getContentType(),
+    payload: blob.getBytes(),
+    headers: {
+      Authorization: "Bearer " + token
+    }
+  };
+
+  var responseUpload = UrlFetchApp.fetch(url, options);
+
+  Logger.log("Upload status: " + responseUpload.getResponseCode());
+}
